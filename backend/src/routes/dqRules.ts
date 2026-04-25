@@ -1,0 +1,63 @@
+import { Router } from 'express';
+import { requireAuth, supabase } from '../middleware/auth';
+
+const router = Router();
+
+function build(body: Record<string, unknown>, userId: string) {
+  const { name, rule_type, description, target_table, target_column, condition, severity, owner, tags } = body as Record<string, string | string[]>;
+  return {
+    user_id: userId,
+    name: (name as string)?.trim(),
+    rule_type: ['Completeness', 'Uniqueness', 'Validity', 'Consistency', 'Timeliness', 'Accuracy'].includes(rule_type as string) ? rule_type : null,
+    description: (description as string)?.trim() || null,
+    target_table: (target_table as string)?.trim() || null,
+    target_column: (target_column as string)?.trim() || null,
+    condition: (condition as string)?.trim() || null,
+    severity: ['Critical', 'High', 'Medium', 'Low'].includes(severity as string) ? severity : null,
+    owner: (owner as string)?.trim() || null,
+    tags: Array.isArray(tags) ? tags : [],
+  };
+}
+
+router.get('/', requireAuth, async (req, res) => {
+  const { data, error } = await supabase.from('data_quality_rules').select('*')
+    .eq('user_id', req.user.id).is('deleted_at', null).order('created_at', { ascending: false });
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  res.json(data);
+});
+
+router.post('/', requireAuth, async (req, res) => {
+  if (!req.body.name?.trim()) { res.status(400).json({ error: 'name is required' }); return; }
+  const { data, error } = await supabase.from('data_quality_rules')
+    .insert({ ...build(req.body, req.user.id), created_by: req.user.id }).select().single();
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  res.status(201).json(data);
+});
+
+router.post('/bulk', requireAuth, async (req, res) => {
+  const rows = req.body as Record<string, unknown>[];
+  if (!Array.isArray(rows) || rows.length === 0) { res.status(400).json({ error: 'Expected a non-empty array' }); return; }
+  const inserts = rows.map(r => ({ ...build(r, req.user.id), created_by: req.user.id }));
+  const { data, error } = await supabase.from('data_quality_rules').insert(inserts).select();
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  res.status(201).json(data);
+});
+
+router.put('/:id', requireAuth, async (req, res) => {
+  const { data, error } = await supabase.from('data_quality_rules')
+    .update({ ...build(req.body, req.user.id), modified_at: new Date().toISOString(), modified_by: req.user.id })
+    .eq('id', req.params.id).eq('user_id', req.user.id).is('deleted_at', null).select().single();
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  if (!data) { res.status(404).json({ error: 'Not found' }); return; }
+  res.json(data);
+});
+
+router.delete('/:id', requireAuth, async (req, res) => {
+  const { error } = await supabase.from('data_quality_rules')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: req.user.id })
+    .eq('id', req.params.id).eq('user_id', req.user.id).is('deleted_at', null);
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  res.status(204).send();
+});
+
+export default router;
